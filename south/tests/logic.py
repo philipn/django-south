@@ -639,8 +639,8 @@ class TestMigrationLogic(Monkeypatcher):
             
             try:
                 if db.backend_name == "pyodbc":
-                    cursor.execute("SET IDENTITY_INSERT southtest_spam ON;")
-                cursor.execute("INSERT INTO southtest_spam (id, weight, expires, name) VALUES (100, NULL, %s, 'whatever');" % now_func)
+                    cursor.execute("SET IDENTITY_INSERT fakeapp_spam ON;")
+                cursor.execute("INSERT INTO fakeapp_spam (id, weight, expires, name) VALUES (100, NULL, %s, 'whatever');" % now_func)
             except:
                 if eat_exception:
                     transaction.rollback()
@@ -648,7 +648,7 @@ class TestMigrationLogic(Monkeypatcher):
                 else:
                     raise
             else:
-                cursor.execute("DELETE FROM southtest_spam")
+                cursor.execute("DELETE FROM fakeapp_spam")
                 transaction.commit()
                 return True
 
@@ -717,8 +717,8 @@ class TestMigrationUtils(Monkeypatcher):
 
     def test_get_app_label(self):
         self.assertEqual(
-            "southtest",
-            get_app_label(self.create_fake_app("southtest.models")),
+            "fakeapp",
+            get_app_label(self.create_fake_app("fakeapp.models")),
         )
         self.assertEqual(
             "baz",
