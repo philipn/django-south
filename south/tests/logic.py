@@ -499,6 +499,56 @@ class TestMigrations(Monkeypatcher):
         self.assertEqual([n + '.migrations' for n in names],
                          [Migrations(n).full_name() for n in names])
 
+    def test_autofake_first(self):
+        """
+        Test that --autofake-first works i.e. does a fake first migration if it
+        detects that tables already exist.
+        """
+        try:
+            # Setup: create initial tables using migration 0001
+            migrations = Migrations("fakeapp")
+            migrate_app(migrations, target_name='0001', fake=False)
+            # and delete South's record of it.
+            MigrationHistory.objects.all().delete()
+
+            # The actual call
+            migrate_app(migrations, target_name=None, autofake_first=True)
+
+            # Final state
+            self.assertEqual(
+                [(u"fakeapp", u"0001_spam"),
+                 (u"fakeapp", u"0002_eggs"),
+                 (u"fakeapp", u"0003_alter_spam"),],
+                list(MigrationHistory.objects.values_list("app_name", "migration")),
+            )
+        finally:
+            # Cleanup
+            migrate_app(Migrations("fakeapp"), target_name="zero", fake=False)
+
+    def test_autofake_first_migrations_applied(self):
+        """
+        Test that --autofake-first detects situation correctly if migrations
+        have already been applied
+        """
+        try:
+            # Setup: Apply one migration
+            migrations = Migrations("fakeapp")
+            migrate_app(migrations, target_name='0001', fake=False)
+
+            # The actual call
+            migrate_app(migrations, target_name=None, autofake_first=True)
+
+            # Final state
+            self.assertEqual(
+                [(u"fakeapp", u"0001_spam"),
+                 (u"fakeapp", u"0002_eggs"),
+                 (u"fakeapp", u"0003_alter_spam"),],
+                list(MigrationHistory.objects.values_list("app_name", "migration")),
+            )
+        finally:
+            # Cleanup
+            migrate_app(migrations, target_name="zero", fake=False)
+
 
 class TestMigrationLogic(Monkeypatcher):
 

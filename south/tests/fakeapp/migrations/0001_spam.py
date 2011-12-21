@@ -15,3 +15,12 @@ class Migration:
     def backwards(self):
         db.delete_table("fakeapp_spam")
 
+
+    models = {
+        'fakeapp.spam': {
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'weight': ('django.db.models.fields.FloatField', [], {}),
+            'expires': ('django.db.models.fields.DateTimeField', [], {}),
+            'name': ('django.db.models.fields.CharField', [], {'max_length': '255'}),
+            }
+        }

@@ -88,6 +88,23 @@ def check_migration_histories(histories, delete_ghosts=False, ignore_ghosts=Fals
             raise exceptions.GhostMigrations(ghosts)
     return exists
 
+def introspection__migration_has_tables(migration, database):
+    """Return True if there exist tables in the database for the given
+    migration. If not, return False.
+
+    """
+    # Get a list of installed tables:
+    conn = south.db.dbs[database]._get_connection()
+    tables = conn.introspection.table_names()
+
+    # Find out if the migration has tables:
+    for label, model in migration.orm().models.items():
+        if label.split('.')[0] != migration.app_label():
+            continue
+        if model._meta.db_table in tables:
+            return True
+    return False
+
 def get_dependencies(target, migrations):
     forwards = list
     backwards = list
@@ -150,7 +167,7 @@ def get_unapplied_migrations(migrations, applied_migrations):
         if not is_applied:
             yield migration
 
-def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_run=False, yes=False, verbosity=0, load_initial_data=False, skip=False, database=DEFAULT_DB_ALIAS, delete_ghosts=False, ignore_ghosts=False, interactive=False):
+def migrate_app(migrations, target_name=None, merge=False, fake=False, autofake_first=False, db_dry_run=False, yes=False, verbosity=0, load_initial_data=False, skip=False, database=DEFAULT_DB_ALIAS, delete_ghosts=False, ignore_ghosts=False, interactive=False):
     app_label = migrations.app_label()
 
     verbosity = int(verbosity)
@@ -179,7 +196,7 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_ru
     
     south.db.db.debug = (verbosity > 1)
 
-    # Evaluate the QuerySets at this point, for clarity
+    # Evaluate the QuerySets at this point, for clarity and efficiency
     hist_applied = SortedSet(hist_applied)
     hist_applied_all = SortedSet(hist_applied_all)
 
@@ -210,21 +227,41 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_ru
             print " - Soft matched migration %s to %s." % (target_name,
                                                            target.name())
         print "Running migrations for %s:" % app_label
-    
+
+    # Autofake first migration if the autofake_first option is given, there are
+    # no applied migrations and tables exist in the database for this app:
+    fake_migrator = None
+
+    if (autofake_first and len(applied) == 0 and
+        introspection__migration_has_tables(migrations[0], database)):
+        fake_target = migrations[0]
+        fake_applied = applied_all.copy()
+        fake_direction, fake_problems, fake_workplan = get_direction(fake_target,
+                fake_applied, migrations, verbosity, interactive)
+        fake_migrator = get_migrator(fake_direction, db_dry_run, True, False)
+        applied.add(fake_target)
+        applied_all.add(fake_target)
+
     # Get the forwards and reverse dependencies for this target
     direction, problems, workplan = get_direction(target, applied_all, migrations,
                                                   verbosity, interactive)
     if problems and not (merge or skip):
         raise exceptions.InconsistentMigrationHistory(problems)
     
+    # Perform a fake first migration if necessary
+    success = False
+    if fake_migrator is not None:
+        success = fake_migrator.migrate_many(fake_target, fake_workplan, database)
+
     # Perform the migration
     migrator = get_migrator(direction, db_dry_run, fake, load_initial_data)
     if migrator:
         migrator.print_title(target)
         success = migrator.migrate_many(target, workplan, database)
-        # Finally, fire off the post-migrate signal
-        if success:
-            post_migrate.send(None, app=app_label)
+
+    # Finally, fire off the post-migrate signal
+    if success:
+        post_migrate.send(None, app=app_label)
     else:
         if verbosity:
             # Say there's nothing.
