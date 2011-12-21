@@ -61,6 +61,10 @@ Options
    full upwards migration, if there are any.
  - ``--fake``: Records the migration sequence as having been applied, but
    doesn't actually run it. Useful for :ref:`converting-an-app`.
+ - ``--autofake-first``: Detects if tables exist for the app, and if
+   no migrations have yet been run the first migration is 'faked'
+   i.e. marked as having been applied without being run. Useful for
+   :ref:`converting-an-app`.
  - ``--db-dry-run``: Loads and runs the migration, but doesn't actually
    access the database (the SQL generated is thrown away at the last minute).
    The migration is also not recorded as being run; this is useful for

@@ -35,3 +35,9 @@ apply correctly.)
 
 Remember that new installations of the codebase after this don't need these
 steps; you need only do a syncdb then a normal migrate.
+
+If you need to run the migrate command so that it will work for either
+situation, you can use ``./manage.py migrate --autofake-first``. For each app
+(or each app specified), this will fake the first migration if no migrations
+have yet been run for that app and if it detects that at least one table for the
+app has already been created.
