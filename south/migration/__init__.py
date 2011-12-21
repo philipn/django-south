@@ -166,12 +166,12 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_ru
     Migrations.calculate_dependencies()
     
     # Check there's no strange ones in the database
-    applied_all = MigrationHistory.objects.filter(applied__isnull=False).order_by('applied')
-    applied = applied_all.filter(app_name=app_label)
+    hist_applied_all = MigrationHistory.objects.filter(applied__isnull=False).order_by('applied')
+    hist_applied = hist_applied_all.filter(app_name=app_label)
     # If we're using a different database, use that
     if database != DEFAULT_DB_ALIAS:
-        applied_all = applied_all.using(database)
-        applied = applied.using(database)
+        hist_applied_all = hist_applied_all.using(database)
+        hist_applied = hist_applied.using(database)
         south.db.db = south.db.dbs[database]
         # We now have to make sure the migrations are all reloaded, as they'll
         # have imported the old value of south.db.db.
@@ -179,9 +179,13 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_ru
     
     south.db.db.debug = (verbosity > 1)
 
+    # Evaluate the QuerySets at this point, for clarity
+    hist_applied = SortedSet(hist_applied)
+    hist_applied_all = SortedSet(hist_applied_all)
+
     if target_name == 'current-1':
-        if applied.count() > 1:
-            previous_migration = applied[applied.count() - 2]
+        if len(hist_applied) > 1:
+            previous_migration = hist_applied.keys()[-2]
             if verbosity:
                 print 'previous_migration: %s (applied: %s)' % (previous_migration.migration, previous_migration.applied)
             target_name = previous_migration.migration
@@ -191,12 +195,13 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, db_dry_ru
             target_name = 'zero'
     elif target_name == 'current+1':
         try:
-            first_unapplied_migration = get_unapplied_migrations(migrations, applied).next()
+            first_unapplied_migration = get_unapplied_migrations(migrations, hist_applied).next()
             target_name = first_unapplied_migration.name()
         except StopIteration:
             target_name = None
     
-    applied_all = check_migration_histories(applied_all, delete_ghosts, ignore_ghosts)
+    applied_all = check_migration_histories(hist_applied_all, delete_ghosts, ignore_ghosts)
+    applied = SortedSet([m.get_migration() for m in hist_applied])
     
     # Guess the target_name
     target = migrations.guess_migration(target_name)
