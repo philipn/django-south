@@ -1,8 +1,8 @@
+import io
 import logging
 import os
 import tempfile
-import unittest
-import StringIO
+from south.tests import unittest
 import sys
 
 from django.conf import settings
@@ -39,14 +39,14 @@ class TestLogger(unittest.TestCase):
         settings.SOUTH_LOGGING_ON = False
 
         # Set root logger to capture WARNING and worse
-        logging_stream = StringIO.StringIO()
+        logging_stream = io.StringIO()
         logging.basicConfig(stream=logging_stream, level=logging.WARNING)
 
         db.create_table("test12", [('email_confirmed', models.BooleanField(default=False))])
 
         # since south logging is off, and our root logger is at WARNING
         # we should not find DEBUG info in the log
-        self.assertIs(logging_stream.getvalue(), '')
+        self.assertEqual(logging_stream.getvalue(), '')
 
     def test_db_execute_logging_validfile(self):
         "Does logging work when passing in a valid file?"
@@ -80,5 +80,3 @@ class TestLogger(unittest.TestCase):
             "test11",
             [('email_confirmed', models.BooleanField(default=False))],
         )
-        
-        

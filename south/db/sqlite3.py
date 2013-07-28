@@ -1,10 +1,5 @@
-import inspect
-import re
-
-from django.db.models import ForeignKey
-
 from south.db import generic
-from django.core.management.commands import inspectdb
+
     
 class DatabaseOperations(generic.DatabaseOperations):
 
@@ -17,22 +12,30 @@ class DatabaseOperations(generic.DatabaseOperations):
     # SQLite ignores several constraints. I wish I could.
     supports_foreign_keys = False
     has_check_constraints = False
+    has_booleans = False
 
     def add_column(self, table_name, name, field, *args, **kwds):
         """
         Adds a column.
         """
         # If it's not nullable, and has no default, raise an error (SQLite is picky)
-        if (not field.null and 
-            (not field.has_default() or field.get_default() is None) and
-            not field.empty_strings_allowed):
+        if (not field.null and
+           (not field.has_default() or field.get_default() is None) and
+           not field.empty_strings_allowed):
             raise ValueError("You cannot add a null=False column without a default value.")
         # Initialise the field.
         field.set_attributes_from_name(name)
-        # We add columns by remaking the table; even though SQLite supports 
+        # We add columns by remaking the table; even though SQLite supports
         # adding columns, it doesn't support adding PRIMARY KEY or UNIQUE cols.
+        # We define fields with no default; a default will be used, though, to fill up the remade table
+        field_default = None
+        if not getattr(field, '_suppress_default', False):
+            default = field.get_default()
+            if default is not None and default!='':
+                field_default = "'%s'" % field.get_db_prep_save(default, connection=self._get_connection())
+        field._suppress_default = True
         self._remake_table(table_name, added={
-            field.column: self._column_sql_for_create(table_name, name, field, False),
+            field.column: (self._column_sql_for_create(table_name, name, field, False), field_default)
         })
 
     def _get_full_table_description(self, connection, cursor, table_name):
@@ -71,32 +74,43 @@ class DatabaseOperations(generic.DatabaseOperations):
             type = column_info['type'].replace("PRIMARY KEY", "")
             # Add on primary key, not null or unique if needed.
             if (primary_key_override and primary_key_override == name) or \
-               (not primary_key_override and indexes[name]['primary_key']):
+               (not primary_key_override and name in indexes and
+                indexes[name]['primary_key']):
                 type += " PRIMARY KEY"
             elif not column_info['null_ok']:
                 type += " NOT NULL"
-            if indexes[name]['unique'] and name not in uniques_deleted:
+            if (name in indexes and indexes[name]['unique'] and
+                name not in uniques_deleted):
                 type += " UNIQUE"
-
             if column_info['dflt_value'] is not None:
                 type += " DEFAULT " + column_info['dflt_value']
-
             # Deal with a rename
             if name in renames:
                 name = renames[name]
             # Add to the defs
             definitions[name] = type
         # Add on altered columns
-        definitions.update(altered)
+        for name, type in altered.items():
+            if (primary_key_override and primary_key_override == name) or \
+               (not primary_key_override and name in indexes and
+                indexes[name]['primary_key']):
+                type += " PRIMARY KEY"
+            if (name in indexes and indexes[name]['unique'] and
+                name not in uniques_deleted):
+                type += " UNIQUE"
+            definitions[name] = type
         # Add on the new columns
-        definitions.update(added)
+        for name, (type,_) in added.items():
+            if (primary_key_override and primary_key_override == name):
+                type += " PRIMARY KEY"
+            definitions[name] = type
         # Alright, Make the table
         self.execute("CREATE TABLE %s (%s)" % (
             self.quote_name(temp_name),
             ", ".join(["%s %s" % (self.quote_name(cname), ctype) for cname, ctype in definitions.items()]),
         ))
         # Copy over the data
-        self._copy_data(table_name, temp_name, renames)
+        self._copy_data(table_name, temp_name, renames, added)
         # Delete the old table, move our new one over it
         self.delete_table(table_name)
         self.rename_table(temp_name, table_name)
@@ -104,9 +118,8 @@ class DatabaseOperations(generic.DatabaseOperations):
         # We can't do that before since it's impossible to rename indexes
         # and index name scope is global
         self._make_multi_indexes(table_name, multi_indexes, renames=renames, deleted=deleted, uniques_deleted=uniques_deleted)
-
     
-    def _copy_data(self, src, dst, field_renames={}):
+    def _copy_data(self, src, dst, field_renames={}, added={}):
         "Used to copy data into a new table"
         # Make a list of all the fields to select
         cursor = self._get_connection().cursor()
@@ -122,6 +135,11 @@ class DatabaseOperations(generic.DatabaseOperations):
             else:
                 continue
             src_fields_new.append(self.quote_name(field))
+        for field, (_,default) in added.items():
+            if default is not None and default!='':
+                field = self.quote_name(field)
+                src_fields_new.append("%s as %s" % (default, field))
+                dst_fields_new.append(field)
         # Copy over the data
         self.execute("INSERT INTO %s (%s) SELECT %s FROM %s;" % (
             self.quote_name(dst),
@@ -170,21 +188,20 @@ class DatabaseOperations(generic.DatabaseOperations):
                     name = renames[name]
                 columns.append(name)
 
-            if columns and columns != uniques_deleted:
+            if columns and set(columns) != set(uniques_deleted):
                 self._create_unique(table_name, columns)
     
     def _column_sql_for_create(self, table_name, name, field, explicit_name=True):
-        "Given a field and its name, returns the full type for the CREATE TABLE."
+        "Given a field and its name, returns the full type for the CREATE TABLE (without unique/pk)"
         field.set_attributes_from_name(name)
         if not explicit_name:
             name = field.db_column
         else:
             field.column = name
         sql = self.column_sql(table_name, name, field, with_name=False, field_prepared=True)
-        #if field.primary_key:
-        #    sql += " PRIMARY KEY"
-        #if field.unique:
-        #    sql += " UNIQUE"
+        # Remove keywords we don't want (this should be type only, not constraint)
+        if sql:
+            sql = sql.replace("PRIMARY KEY", "")
         return sql
     
     def alter_column(self, table_name, name, field, explicit_name=True, ignore_constraints=False):
@@ -195,7 +212,15 @@ class DatabaseOperations(generic.DatabaseOperations):
         The argument is accepted for API compatibility with the generic
         DatabaseOperations.alter_column() method.
         """
+        # Change nulls to default if needed
+        if not field.null and field.has_default():
+            params = {
+                "column": self.quote_name(name),
+                "table_name": self.quote_name(table_name)
+            }            
+            self._update_nulls_to_default(params, field)
         # Remake the table correctly
+        field._suppress_default = True
         self._remake_table(table_name, altered={
             name: self._column_sql_for_create(table_name, name, field, explicit_name),
         })
@@ -238,3 +263,10 @@ class DatabaseOperations(generic.DatabaseOperations):
     # No cascades on deletes
     def delete_table(self, table_name, cascade=True):
         generic.DatabaseOperations.delete_table(self, table_name, False)
+
+    def _default_value_workaround(self, default):
+        if default == True:
+            default = 1
+        elif default == False:
+            default = 0
+        return default

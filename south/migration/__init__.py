@@ -2,6 +2,8 @@
 Main migration logic.
 """
 
+from __future__ import print_function
+
 import sys
 
 from django.core.exceptions import ImproperlyConfigured
@@ -50,16 +52,21 @@ def inner_problem_check(problems, done, verbosity):
     "Takes a set of possible problems and gets the actual issues out of it."
     result = []
     for last, migration in problems:
+        checked = set([])
         # 'Last' is the last applied migration. Step back from it until we
         # either find nothing wrong, or we find something.
         to_check = list(last.dependencies)
         while to_check:
             checking = to_check.pop()
+            if checking in checked:
+                continue
+            checked.add(checking)
+
             if checking not in done:
                 # That's bad. Error.
                 if verbosity:
-                    print (" ! Migration %s should not have been applied "
-                           "before %s but was." % (last, checking))
+                    print((" ! Migration %s should not have been applied "
+                           "before %s but was." % (last, checking)))
                 result.append((last, checking))
             else:
                 to_check.extend(checking.dependencies)
@@ -176,57 +183,47 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, autofake_
     
     # If there aren't any, quit quizically
     if not migrations:
-        print "? You have no migrations for the '%s' app. You might want some." % app_label
+        print("? You have no migrations for the '%s' app. You might want some." % app_label)
         return
     
     # Load the entire dependency graph
     Migrations.calculate_dependencies()
     
     # Check there's no strange ones in the database
-    hist_applied_all = MigrationHistory.objects.filter(applied__isnull=False).order_by('applied')
-    hist_applied = hist_applied_all.filter(app_name=app_label)
-    # If we're using a different database, use that
-    if database != DEFAULT_DB_ALIAS:
-        hist_applied_all = hist_applied_all.using(database)
-        hist_applied = hist_applied.using(database)
-        south.db.db = south.db.dbs[database]
-        # We now have to make sure the migrations are all reloaded, as they'll
-        # have imported the old value of south.db.db.
-        Migrations.invalidate_all_modules()
+    applied_all = MigrationHistory.objects.filter(applied__isnull=False).order_by('applied').using(database)
+    applied = applied_all.filter(app_name=app_label).using(database)
+    south.db.db = south.db.dbs[database]
+    Migrations.invalidate_all_modules()
     
     south.db.db.debug = (verbosity > 1)
 
-    # Evaluate the QuerySets at this point, for clarity and efficiency
-    hist_applied = SortedSet(hist_applied)
-    hist_applied_all = SortedSet(hist_applied_all)
-
     if target_name == 'current-1':
-        if len(hist_applied) > 1:
-            previous_migration = hist_applied.keys()[-2]
+        if len(applied) > 1:
+            previous_migration = applied.keys()[-2]
             if verbosity:
-                print 'previous_migration: %s (applied: %s)' % (previous_migration.migration, previous_migration.applied)
+                print('previous_migration: %s (applied: %s)' % (previous_migration.migration, previous_migration.applied))
             target_name = previous_migration.migration
         else:
             if verbosity:
-                print 'previous_migration: zero'
+                print('previous_migration: zero')
             target_name = 'zero'
     elif target_name == 'current+1':
         try:
-            first_unapplied_migration = get_unapplied_migrations(migrations, hist_applied).next()
+            first_unapplied_migration = get_unapplied_migrations(migrations, applied).next()
             target_name = first_unapplied_migration.name()
         except StopIteration:
             target_name = None
     
-    applied_all = check_migration_histories(hist_applied_all, delete_ghosts, ignore_ghosts)
-    applied = SortedSet([m.get_migration() for m in hist_applied])
+    applied_all = check_migration_histories(applied_all, delete_ghosts, ignore_ghosts)
+    applied = SortedSet([m.get_migration() for m in applied])
     
     # Guess the target_name
     target = migrations.guess_migration(target_name)
     if verbosity:
         if target_name not in ('zero', None) and target.name() != target_name:
-            print " - Soft matched migration %s to %s." % (target_name,
-                                                           target.name())
-        print "Running migrations for %s:" % app_label
+            print (" - Soft matched migration %s to %s." % (target_name,
+                                                           target.name()))
+        print ("Running migrations for %s:" % app_label)
 
     # Autofake first migration if the autofake_first option is given, there are
     # no applied migrations and tables exist in the database for this app:
@@ -265,7 +262,7 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, autofake_
     else:
         if verbosity:
             # Say there's nothing.
-            print '- Nothing to migrate.'
+            print('- Nothing to migrate.')
         # If we have initial data enabled, and we're at the most recent
         # migration, do initial data.
         # Note: We use a fake Forwards() migrator here. It's never used really.
