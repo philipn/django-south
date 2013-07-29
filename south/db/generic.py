@@ -101,6 +101,7 @@ class DatabaseOperations(object):
     supports_foreign_keys = True
     has_check_constraints = True
     has_booleans = True
+    raises_default_errors = True
 
     @cached_property
     def has_ddl_transactions(self):
@@ -417,7 +418,7 @@ class DatabaseOperations(object):
             self.execute(sql)
 
             # Now, drop the default if we need to
-            if not keep_default and field.default is not None:
+            if field.default is not None:
                 field.default = NOT_PROVIDED
                 self.alter_column(table_name, name, field, explicit_name=False, ignore_constraints=True)
 
@@ -443,12 +444,11 @@ class DatabaseOperations(object):
 
     def _alter_set_defaults(self, field, name, params, sqls):
         "Subcommand of alter_column that sets default values (overrideable)"
-        # Next, set any default
-        if not field.null and field.has_default():
-            default = field.get_db_prep_save(field.get_default(), connection=self._get_connection())
-            sqls.append(('ALTER COLUMN %s SET DEFAULT %%s ' % (self.quote_name(name),), [default]))
-        else:
-            sqls.append(('ALTER COLUMN %s DROP DEFAULT' % (self.quote_name(name),), []))
+        # Historically, we used to set defaults here.
+        # But since South 0.8, we don't ever set defaults on alter-column -- we only
+        # use database-level defaults as scaffolding when adding columns.
+        # However, we still sometimes need to remove defaults in alter-column.
+        sqls.append(('ALTER COLUMN %s DROP DEFAULT' % (self.quote_name(name),), []))
 
     def _update_nulls_to_default(self, params, field):
         "Subcommand of alter_column that updates nulls to default value (overrideable)"
@@ -523,6 +523,9 @@ class DatabaseOperations(object):
             sqls.append((self.alter_string_set_null % params, []))
         else:
             sqls.append((self.alter_string_drop_null % params, []))
+
+        # Do defaults
+        self._alter_set_defaults(field, name, params, sqls)
 
         # Actually change the column (step 1 -- Nullity may need to be fixed)
         if self.allows_combined_alters:
@@ -831,8 +834,13 @@ class DatabaseOperations(object):
 
         # If there is just one column in the index, use a default algorithm from Django
         if len(column_names) == 1 and not suffix:
+            try:
+                _hash = self._digest([column_names[0]])
+            except TypeError:
+                # Django < 1.5 backward compatibility.
+                _hash = self._digest(column_names[0])
             return self.shorten_name(
-                '%s_%s' % (table_name, self._digest(column_names[0]))
+                '%s_%s' % (table_name, _hash),
             )
 
         # Else generate the name for the index by South

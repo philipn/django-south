@@ -1,4 +1,5 @@
 import datetime
+from warnings import filterwarnings
 
 from south.db import db, generic
 from django.db import connection, models, IntegrityError as DjangoIntegrityError
@@ -37,6 +38,12 @@ class TestOperations(unittest.TestCase):
 
     def setUp(self):
         db.debug = False
+        try:
+            import MySQLdb
+        except ImportError:
+            pass
+        else:
+            filterwarnings('ignore', category=MySQLdb.Warning)
         db.clear_deferred_sql()
         db.start_transaction()
     
@@ -63,6 +70,7 @@ class TestOperations(unittest.TestCase):
         else:
             self.fail("Non-existent table could be selected!")
     
+    @skipUnless(db.raises_default_errors, 'This database does not raise errors on missing defaults.')
     def test_create_default(self):
         """
         Test creation of tables, make sure defaults are not left in the database
@@ -277,12 +285,11 @@ class TestOperations(unittest.TestCase):
             ('eggs', models.IntegerField()),
         ])
         # Add a column
-        db.add_column("test_addc", "add1", models.IntegerField(default=3), keep_default=False)
-        # Add a FK with keep_default=False (#69)
+        db.add_column("test_addc", "add1", models.IntegerField(default=3))
         User = db.mock_model(model_name='User', db_table='auth_user', db_tablespace='', pk_field_name='id', pk_field_type=models.AutoField, pk_field_args=[], pk_field_kwargs={})
         # insert some data so we can test the default value of the added fkey
         db.execute("INSERT INTO test_addc (spam, eggs, add1) VALUES (%s, 1, 2)", [False])
-        db.add_column("test_addc", "user", models.ForeignKey(User, null=True), keep_default=False)
+        db.add_column("test_addc", "user", models.ForeignKey(User, null=True))
         db.execute_deferred_sql()
         # try selecting from the user_id column to make sure it was actually created
         val = db.execute("SELECT user_id FROM test_addc")[0][0]
@@ -353,7 +360,57 @@ class TestOperations(unittest.TestCase):
         db.execute("INSERT INTO test_altercd (eggs) values (12)")
         null = db.execute("SELECT spam FROM test_altercd")[0][0]
         self.assertFalse(null, "Default for char field was installed into database")
+
+        # Change again to a column with default and not null
+        db.alter_column("test_altercd", "spam", models.CharField(max_length=30, default="loof", null=False))
+        # Assert the default is not in the database
+        if 'oracle' in db.backend_name:
+            # Oracle special treatment -- nulls are always allowed in char columns, so 
+            # inserting doesn't raise an integrity error; so we check again as above
+            db.execute("DELETE FROM test_altercd")
+            db.execute("INSERT INTO test_altercd (eggs) values (12)")
+            null = db.execute("SELECT spam FROM test_altercd")[0][0]
+            self.assertFalse(null, "Default for char field was installed into database")
+        else:
+            # For other backends, insert should now just fail
+            self.assertRaises(IntegrityError,
+                              db.execute, "INSERT INTO test_altercd (eggs) values (12)")
+
+    @skipIf('oracle' in db.backend_name, "Oracle does not differentiate empty trings from null")
+    def test_default_empty_string(self):
+        """
+        Test altering column defaults with char fields
+        """
+        db.create_table("test_cd_empty", [
+            ('spam', models.CharField(max_length=30, default='')),
+            ('eggs', models.CharField(max_length=30)),
+        ])
+        # Create a record
+        db.execute("INSERT INTO test_cd_empty (spam, eggs) values ('1','2')")
+        # Add a column
+        db.add_column("test_cd_empty", "ham", models.CharField(max_length=30, default=''))
         
+        empty = db.execute("SELECT ham FROM test_cd_empty")[0][0]
+        self.assertEquals(empty, "", "Empty Default for char field isn't empty string")
+        
+    @skipUnless('oracle' in db.backend_name, "Oracle does not differentiate empty trings from null")
+    def test_oracle_strings_null(self):
+        """
+        Test that under Oracle, CherFields are created as null even when specified not-null,
+        because otherwise they would not be able to hold empty strings (which Oracle equates
+        with nulls).
+        Verify fix of #1269.
+        """
+        db.create_table("test_ora_char_nulls", [
+            ('spam', models.CharField(max_length=30, null=True)),
+            ('eggs', models.CharField(max_length=30)),
+        ])
+        db.add_column("test_ora_char_nulls", "ham", models.CharField(max_length=30))
+        db.alter_column("test_ora_char_nulls", "spam", models.CharField(max_length=30, null=False))
+        # So, by the look of it, we should now have three not-null columns
+        db.execute("INSERT INTO test_ora_char_nulls VALUES (NULL, NULL, NULL)")
+        
+
     def test_mysql_defaults(self):
         """
         Test MySQL default handling for BLOB and TEXT.
@@ -561,8 +618,8 @@ class TestOperations(unittest.TestCase):
             db.execute("INSERT INTO test_alter_unique2 (spam, eggs) VALUES (1, 42)")
         except:
             self.fail("Looks like multi-field unique constraint applied to only one field.")
-        db.start_transaction()
         db.rollback_transaction()
+        db.start_transaction()
         try:
             db.execute("INSERT INTO test_alter_unique2 (spam, eggs) VALUES (0, 43)")
         except:
@@ -574,17 +631,17 @@ class TestOperations(unittest.TestCase):
         except:
             pass
         else:
-            self.fail("Could insert the same integer twice into a unique field.")
+            self.fail("Could insert the same pair twice into unique-together fields.")
         db.rollback_transaction()
         # Altering one column should not drop or modify multi-column constraint
-        db.alter_column("test_alter_unique2", "eggs", models.CharField(max_length=10))
+        db.alter_column("test_alter_unique2", "eggs", models.PositiveIntegerField())
         db.start_transaction()
         try:
             db.execute("INSERT INTO test_alter_unique2 (spam, eggs) VALUES (1, 42)")
         except:
             self.fail("Altering one column broken multi-column unique constraint.")
-        db.start_transaction()
         db.rollback_transaction()
+        db.start_transaction()
         try:
             db.execute("INSERT INTO test_alter_unique2 (spam, eggs) VALUES (0, 43)")
         except:
@@ -596,7 +653,7 @@ class TestOperations(unittest.TestCase):
         except:
             pass
         else:
-            self.fail("Could insert the same integer twice into a unique field after alter_column with unique=False.")
+            self.fail("Could insert the same pair twice into unique-together fields after alter_column with unique=False.")
         db.rollback_transaction()
         db.delete_table("test_alter_unique2")
         db.start_transaction()
@@ -650,6 +707,7 @@ class TestOperations(unittest.TestCase):
         after = text_type(after) # Oracle text fields return a sort of lazy string -- force evaluation
         self.assertEqual(value, after, "Change from char to text altered value [ %r != %r ]" % (value, after))
 
+    @skipUnless(db.raises_default_errors, 'This database does not raise errors on missing defaults.')
     def test_datetime_default(self):
         """
         Test that defaults are correctly not created for datetime columns
@@ -684,8 +742,8 @@ class TestOperations(unittest.TestCase):
         for e in ends:
             self.failUnlessEqual(e, end_of_world)
         db.commit_transaction()
-        # ...but there should not be a default in the database for any column (other than the 'null' for col0)
-        for cols in ["col1,col2", "col1,col3","col2,col3"]:
+        # ...but there should not be a default in the database for col1 or col3
+        for cols in ["col1,col2", "col2,col3"]:
             db.start_transaction()
             statement = "insert into test_datetime_def (col0,%s) values (null,%%s,%%s)" % cols
             self.assertRaises(
@@ -800,12 +858,40 @@ class TestOperations(unittest.TestCase):
         db.execute_deferred_sql()
         
         # Add foreign key
-        db.add_column("test_fk", 'foreik', models.ForeignKey(User, null=True),
-                      keep_default = False)
+        db.add_column("test_fk", 'foreik', models.ForeignKey(User, null=True))
+        db.execute_deferred_sql()
+        
+        # Make the FK not null
+        db.alter_column("test_fk", "foreik_id", models.ForeignKey(User))
+        db.execute_deferred_sql()
+
+    def test_make_foreign_key_null(self):
+        # Table for FK to target
+        User = db.mock_model(model_name='User', db_table='auth_user', db_tablespace='', pk_field_name='id', pk_field_type=models.AutoField, pk_field_args=[], pk_field_kwargs={})
+        # Table with no foreign key
+        db.create_table("test_make_fk_null", [
+            ('eggs', models.IntegerField()),
+            ('foreik', models.ForeignKey(User))
+        ])
         db.execute_deferred_sql()
         
         # Make the FK null
-        db.alter_column("test_fk", "foreik_id", models.ForeignKey(User))
+        db.alter_column("test_make_fk_null", "foreik_id", models.ForeignKey(User, null=True))
+        db.execute_deferred_sql()
+
+    def test_alter_double_indexed_column(self):
+        # Table for FK to target
+        User = db.mock_model(model_name='User', db_table='auth_user', db_tablespace='', pk_field_name='id', pk_field_type=models.AutoField, pk_field_args=[], pk_field_kwargs={})
+        # Table with no foreign key
+        db.create_table("test_2indexed", [
+            ('eggs', models.IntegerField()),
+            ('foreik', models.ForeignKey(User))
+        ])
+        db.create_unique("test_2indexed", ["eggs", "foreik_id"])
+        db.execute_deferred_sql()
+        
+        # Make the FK null
+        db.alter_column("test_2indexed", "foreik_id", models.ForeignKey(User, null=True))
         db.execute_deferred_sql()
 
 class TestCacheGeneric(unittest.TestCase):
