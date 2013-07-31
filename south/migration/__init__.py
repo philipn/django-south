@@ -198,8 +198,8 @@ def migrate_app(migrations, target_name=None, merge=False, fake=False, autofake_
     south.db.db.debug = (verbosity > 1)
 
     if target_name == 'current-1':
-        if len(applied) > 1:
-            previous_migration = applied.keys()[-2]
+        if applied.count() > 1:
+            previous_migration = applied[applied.count() - 2]
             if verbosity:
                 print('previous_migration: %s (applied: %s)' % (previous_migration.migration, previous_migration.applied))
             target_name = previous_migration.migration
